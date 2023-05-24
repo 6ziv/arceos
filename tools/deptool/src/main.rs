@@ -1,16 +1,6 @@
-// use std::process::Command;
-use std::env;
-use deptool::{Config, generate_mermaid};
-use std::process;
-
+use deptool::{parse_and_generate,parse_args};
 fn main() {
-    let args: Vec<String> = env::args().collect();
-
-    let config = Config::build(&args).unwrap_or_else(|err| {
-        eprintln!("problem parsinig arguments: {err}");
-        process::exit(1);
-    });
-
-    let rst = generate_mermaid(&config);
+    let conf = parse_args();
+    let rst = parse_and_generate(&conf).unwrap();
     println!("{}", rst);
 }
