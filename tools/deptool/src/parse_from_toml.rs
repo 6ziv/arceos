@@ -173,11 +173,11 @@ pub fn parse_deps_from_toml(
     let mut graph = Graph::new();
     parse_cargo_toml_and_append(name.clone(), app_path, &mut graph, &mut visited);
 
-    graph.content.iter().for_each(|(node,nodes)|{
-        print!("{node}: [");
-        nodes.iter().for_each(|v|{print!("{v}, ")});
-        println!("]");
-    });
+    // graph.content.iter().for_each(|(node,nodes)|{
+    //     print!("{node}: [");
+    //     nodes.iter().for_each(|v|{print!("{v}, ")});
+    //     println!("]");
+    // });
 
     
     queue.push_back(Node::Component(name.clone()));
