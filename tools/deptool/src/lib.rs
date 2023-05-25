@@ -2,7 +2,6 @@
 extern crate lazy_static;
 
 use std::{collections::{BTreeSet, BTreeMap}};
-mod parse_from_toml;
 
 mod utils;
 
@@ -16,8 +15,10 @@ use mermaid_generator::generate_mermaid;
 mod d2_generator;
 use d2_generator::generate_d2;
 
+mod parse_from_toml;
+mod parse_from_cargo_tree;
 use parse_from_toml::parse_deps_from_toml;
-//use parse_from_cargo_tree::parse_deps_from_cargo_tree;
+use parse_from_cargo_tree::parse_deps_from_cargo_tree;
 
 
 fn parse_deps(config: &Config)->Result<BTreeMap<String,BTreeSet<String>>,String>{
@@ -25,8 +26,8 @@ fn parse_deps(config: &Config)->Result<BTreeMap<String,BTreeSet<String>>,String>
         ParserType::ParseFromToml => 
             Ok(parse_deps_from_toml(config.crate_name.clone(), &config.path, config.features.clone(),!config.no_default)),
         ParserType::ParseFromCargoTree =>
-            //Ok(parse_deps_from_cargo_tree(config.crate_name.clone(),BTreeSet::<String>::new(),true)),
-            Err("Parse from cargo tree not implemented yet".to_string()),
+            Ok(parse_deps_from_cargo_tree(config.crate_name.clone(), &config.path, config.features.clone(),!config.no_default)),
+            //Err("Parse from cargo tree not implemented yet".to_string()),
 
         // _ =>
         //     Err("Unknown parser".to_string()),

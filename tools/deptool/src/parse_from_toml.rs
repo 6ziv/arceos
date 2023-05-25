@@ -1,125 +1,164 @@
-use std::{collections::{VecDeque, BTreeSet, BTreeMap}, path::Path};
+use std::{collections::{VecDeque, BTreeSet, BTreeMap}, path::Path, fmt};
 use crate::utils::find_arceos_crate;
 use cargo_toml::Manifest;
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
+enum Node
+{
+    Component(String),
+    Feature(String,String),
+    Condition((String,String),String),
+}
+impl Node{
+    fn get_component(&self)->String{
+        match self{
+            Node::Component(v) => v.to_string(),
+            Node::Feature(v,_)=>v.to_string(),
+            Node::Condition((v,_),_)=>v.to_string(),
+        }
+    }
+}
+struct Graph{
+    pub content: BTreeMap<Node,BTreeSet<Node>>,
+    pub conditions: BTreeMap<Node, usize>,
+}
+impl Graph{
+    fn new()->Self{
+        Self { 
+            content: BTreeMap::<Node,BTreeSet<Node>>::new(),
+            conditions: BTreeMap::<Node, usize>::new(),
+        }
+    }
+    fn make_link(&mut self, lhs: Node, rhs: Node){
+        if !self.content.contains_key(&lhs){
+            self.content.insert(lhs.clone(), BTreeSet::<Node>::new());
+        }
+        self.content.get_mut(&lhs).unwrap().insert(rhs);
+    }
+    fn insert_condition(&mut self, cond1: Node, cond2: Node)->Node{
+        let Node::Feature(cur,feat) = cond1.clone() else {panic!("unexpected node type!");};
+        let Node::Component(dep) = cond2.clone() else {panic!("unexpected node type!");};
+        let cond = Node::Condition((cur,feat), dep);
+        self.make_link(cond1.clone(), cond.clone());
+        self.make_link(cond2.clone(), cond.clone());
+        self.conditions.insert(cond.clone(), 2);
+        cond
+    }
+}
 fn parse_cargo_toml_and_append(
     name: String,
     path: &Path, //override crate/module lookup. so we can support looking into apps.
-    req_features:BTreeSet<String>, 
-    use_default_features:bool,
-    result: &mut BTreeMap<String,BTreeSet<String>>,
-
-    visited: &mut BTreeSet<(String,BTreeSet<String>,bool)>, // stop if called with exactly the same parameters.
+    
+    graph: &mut Graph,
+    visited: &mut BTreeSet<String>,
 )
 {
-    let check_dup = (name.clone(),req_features.clone(),use_default_features);
-    if !visited.insert(check_dup){
+    if !visited.insert(name.clone()){
         return;
     }
 
-    // let pathbuf = find_arceos_crate(&name);
-    // let path = pathbuf.unwrap_or_else(||{
-    //     panic!("Cannot find crate or module {}",name);
-    // });
     let toml_path = path.join("Cargo.toml");
     let toml = Manifest::from_path(toml_path).unwrap();
 
-    let mut enabled_dependencies = BTreeMap::<String,(BTreeSet<String>,bool)>::new();
-    let mut optional_dependencies = BTreeMap::<String,BTreeSet<String>>::new();
-    
+    let mut dependencies = BTreeMap::<String,bool>::new();
+    let mut weakname = BTreeSet::<String>::new();
     let deps = toml.dependencies;
-    deps.into_iter().for_each(|(name,dependency)|{
-        if let Some(_) = find_arceos_crate(&name){
-            if dependency.optional(){
-                optional_dependencies.insert(name,BTreeSet::<String>::new());
-            }else{
-                let default_features = 
-                    if let Some(detail) = dependency.detail(){
-                        detail.default_features
-                    }else{
-                        true
-                    };
-                let mut features_requested_dep = BTreeSet::<String>::new();
-                dependency.req_features().into_iter().for_each(|feature|{
-                    features_requested_dep.insert(feature.to_owned());
+    deps.into_iter().for_each(|(depname,dependency)|{
+        if let Some(p) = find_arceos_crate(&depname){
+            parse_cargo_toml_and_append(depname.clone(),p.as_path(),graph,visited);
+
+            weakname.insert(depname.clone());
+            let mut use_default = true;
+            if !dependency.optional(){
+                graph.make_link(Node::Component(name.clone()), Node::Component(depname.clone()));
+                if let Some(detail) = dependency.detail(){
+                    if !detail.default_features{
+                        use_default = false;
+                        //dependencies.insert(depname.clone(), dependency.detail().def);
+                    }
+                }
+                dependency.req_features().iter().for_each(|req_feature|{
+                    graph.make_link(Node::Component(name.clone()), Node::Feature(depname.clone(), req_feature.clone()));
                 });
-
-                enabled_dependencies.insert(name,(features_requested_dep,default_features));
             }
+
+            dependencies.insert(depname.clone(), use_default);
         }
     });
 
     
-    let mut features = BTreeMap::<String,Vec<String>>::new();
-    let mut default_features = Vec::<String>::new();
-    toml.features.into_iter().for_each(|(k,mut v)|{
-        if k=="default"{
-            default_features.append(&mut v);
-        }else{
-            features.insert(k, v);
-        }
-    });
-    let mut enabled_features_queue = VecDeque::<String>::new();
-    let mut enabled_features = BTreeSet::<String>::new();
-    
-    req_features.into_iter().for_each(|feature|{
-        enabled_features_queue.push_back(feature);
-    });
-    if use_default_features{
-        default_features.into_iter().for_each(|feature|{
-            enabled_features_queue.push_back(feature);
+    //let mut features = BTreeMap::<String,Vec<String>>::new();
+    //let mut default_features = Vec::<String>::new();
+    toml.features.iter().for_each(|(feature_name,v)|{
+        let current_feature = Node::Feature(name.clone(), feature_name.clone());
+        graph.make_link(current_feature.clone(), Node::Component(name.clone()));
+
+        v.into_iter().for_each(|feature_str|{
+            if feature_str.starts_with("dep:"){
+                let (_, dep_name) = feature_str.split_at(4);
+                weakname.remove(dep_name);
+                if find_arceos_crate(&(dep_name.to_string())).is_some(){
+                    if !dependencies.contains_key(dep_name){
+                        panic!("Unknown dependency {} when parsing feature {} in {}", dep_name,feature_name,name);
+                    }
+                    //println!("CONNECT DEP: {} -> {}",current_feature,Node::Component(dep_name.to_string()));
+                    graph.make_link(current_feature.clone(), Node::Component(dep_name.to_string()));
+                    if *dependencies.get(dep_name).unwrap(){
+                        graph.make_link(current_feature.clone(), Node::Feature(dep_name.to_string(),"default".to_string()));
+                    }
+                }
+            }else if let Some((dep_name,dep_feat)) = feature_str.split_once('/'){
+                let only_when_enabled = dep_name.ends_with('?');
+                let dependency_name = if only_when_enabled{
+                    dep_name.trim_end_matches('?')
+                }else{
+                    dep_name
+                }.to_string();
+                if find_arceos_crate(&dependency_name).is_some(){
+                    if !dependencies.contains_key(&dependency_name){
+                        panic!("Unknown dependency {} when parsing feature {} in {}", dependency_name, feature_name,name);
+                    }
+
+                    let dependency_feature = Node::Feature(dependency_name.clone(), dep_feat.to_string());
+                    if only_when_enabled{
+                        let dependency_component = Node::Component(dependency_name.clone());
+                        let cond = graph.insert_condition(current_feature.clone(), dependency_component);
+                        graph.make_link(cond, dependency_feature);
+                    }else{
+                        graph.make_link(current_feature.clone(), dependency_feature);
+                    }
+                }
+            }else if toml.features.contains_key(feature_str) || weakname.contains(feature_str){
+                let linked_feature = Node::Feature(name.clone(), feature_str.to_owned());
+                graph.make_link(current_feature.clone(), linked_feature);
+            }else{
+                //ignore it: may be build dependencies.
+
+                //panic!("unknown feature {} / {}",name,feature_str);
+            }
         });
-    }
-    while !enabled_features_queue.is_empty(){
-        let feature = enabled_features_queue.pop_front().unwrap();
-        if feature.starts_with("dep:"){
-            let ( _ , dep) = feature.split_at(4);
-            if let Some(opt_dep_features) = optional_dependencies.get(dep)
-            {
-                if !enabled_dependencies.contains_key(dep){
-                    enabled_dependencies.insert(dep.to_string(), (opt_dep_features.clone(),false));
-                }
-            }
-        }
-        else if let Some((dependency,feature)) = feature.split_once('/'){
-            let only_when_enabled = dependency.ends_with('?');
-            let dependency_name = if only_when_enabled{
-                dependency.trim_end_matches('?')
-            }else{
-                dependency
-            };
-
-            if let Some(dep_features) = enabled_dependencies.get_mut(dependency_name){
-                (*dep_features).0.insert(feature.to_string());
-            }else if let Some(opt_dep_features) = optional_dependencies.get_mut(dependency_name){
-                opt_dep_features.insert(feature.to_string());
-                if !only_when_enabled{
-                    let new_features = opt_dep_features.clone();
-                    enabled_dependencies.insert(dependency_name.to_string(), (new_features,false));
-                }
-            }else{
-                panic!("Unknown dependency {} {}",dependency.to_string(),name);
-            }
-        }else{
-            if enabled_features.insert(feature.clone()){
-                if let Some(features_linked) = features.get_mut(&feature){
-                    features_linked.into_iter().for_each(|lfeature|{
-                        enabled_features_queue.push_back(lfeature.clone());
-                    });
-                }
-                //enabled_features_queue.push_back(feature);
-            }
-        }
-    }
-
-    let mut dependencies_for_this = BTreeSet::<String>::new();
-    enabled_dependencies.into_iter().for_each(|(depname,(dep_features,dep_use_default))|{
-        dependencies_for_this.insert(depname.clone());
-        let pathbuf = find_arceos_crate(&depname).unwrap();
-        parse_cargo_toml_and_append(depname,pathbuf.as_path(),dep_features,dep_use_default,result,visited);
     });
-    result.insert(name, dependencies_for_this);
+
+    weakname.iter().for_each(|dep_name|{
+        graph.make_link(Node::Feature(name.clone(), dep_name.to_owned()), Node::Component(dep_name.to_owned()));
+        if *dependencies.get(dep_name).unwrap(){
+            graph.make_link(Node::Feature(name.clone(), dep_name.to_owned()), Node::Feature(dep_name.to_string(),"default".to_string()));
+        }
+    })
+
 }
+
+impl fmt::Display for Node{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.clone(){
+            Node::Component(str)=>write!(f,"Component({})",str),
+            Node::Feature(c,fea )=>write!(f,"Feature({}/{})",c,fea),
+            Node::Condition((c1,fea), c2)=>write!(f,"Feature({c1}/{fea}) + Component({c2})"),
+        }
+        
+    }
+}
+
 pub fn parse_deps_from_toml(
     name: String,
     app_path: &Path,
@@ -128,7 +167,61 @@ pub fn parse_deps_from_toml(
 )->BTreeMap<String,BTreeSet<String>>
 {
     let mut result = BTreeMap::<String,BTreeSet<String>>::new();
-    let mut visited_checker = BTreeSet::<(String,BTreeSet<String>,bool)>::new();
-    parse_cargo_toml_and_append(name, app_path, req_features, use_default_features, &mut result, &mut visited_checker);
+    let mut queue= VecDeque::<Node>::new();
+    let mut taken= BTreeSet::<Node>::new();
+    let mut visited = BTreeSet::<String>::new();
+    let mut graph = Graph::new();
+    parse_cargo_toml_and_append(name.clone(), app_path, &mut graph, &mut visited);
+
+    graph.content.iter().for_each(|(node,nodes)|{
+        print!("{node}: [");
+        nodes.iter().for_each(|v|{print!("{v}, ")});
+        println!("]");
+    });
+
+    
+    queue.push_back(Node::Component(name.clone()));
+    req_features.into_iter().for_each(|feature|{
+        let feat = Node::Feature(name.clone(), feature.clone());
+        if taken.insert(feat.clone()){
+            queue.push_back(feat.clone());
+        };
+    });
+    if use_default_features{
+        let feat = Node::Feature(name.clone(), "default".to_string());
+        if taken.insert(feat.clone()){
+            queue.push_back(feat.clone());
+        };
+    }
+
+    while !queue.is_empty(){
+        let current_node = queue.pop_front().unwrap();
+        if let Some(neighbor_nodes) = graph.content.get(&current_node){
+            neighbor_nodes.into_iter().for_each(|nnode|{
+                if let Node::Condition(..) = nnode{
+                    if let Some(v) = graph.conditions.get_mut(nnode){
+                        (*v) -= 1;
+                        if *v == 0usize{
+                            if taken.insert(nnode.clone()){
+                                queue.push_back(nnode.clone());
+                            };
+                        }
+                    }
+                }else{
+                    if taken.insert(nnode.clone()){
+                        queue.push_back(nnode.clone());
+                    };
+                    if current_node.get_component() != nnode.get_component(){
+                        let cur_com = current_node.get_component();
+                        let dep_com = nnode.get_component();
+                        if !result.contains_key(&cur_com){
+                            result.insert(cur_com.clone(), BTreeSet::<String>::new());
+                        }
+                        result.get_mut(&cur_com).unwrap().insert(dep_com);
+                    }
+                }
+            });
+        }
+    }
     result
 }
