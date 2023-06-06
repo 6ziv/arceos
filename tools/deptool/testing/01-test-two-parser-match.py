@@ -4,7 +4,6 @@ from sys import argv
 import subprocess
 def chk(exec, name, path, arceos_path):
     result1 = subprocess.run([exec, name, "--path", path ,"--root", arceos_path], check=True, capture_output=True)
-    
     result2 = subprocess.run([exec, name, "--path", path ,"--root", arceos_path, "--from-cargo-tree"], check=True, capture_output=True)
     if result1.stdout == result2.stdout:
         print(f"Test {name} -- Ok")

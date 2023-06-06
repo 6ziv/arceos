@@ -21,7 +21,7 @@ pub fn get_deps_by_crate_name(
     }
     if !req_features.is_empty(){
         cmdline += " --features ";
-        cmdline += req_features.into_iter().fold(String::new(), |s1,s2|{s1+" "+s2.as_str()}).as_str();
+        cmdline += req_features.into_iter().fold(String::new(), |s1,s2|{s1+","+s2.as_str()}).as_str();
     }
     let cmd1 = cmdline.as_str();
     let cmds = ["-c", cmd1];

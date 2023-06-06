@@ -1,5 +1,5 @@
 use std::{collections::{VecDeque, BTreeSet, BTreeMap}, path::Path, fmt};
-use crate::utils::find_arceos_crate;
+use crate::utils::{find_arceos_crate, get_workspace};
 use cargo_toml::Manifest;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -51,6 +51,11 @@ fn parse_cargo_toml_and_append(
     
     graph: &mut Graph,
     visited: &mut BTreeSet<String>,
+    
+    resolver: cargo_toml::Resolver,
+    top_dev_dependencies: Option<&BTreeMap<String,BTreeSet<String>>>,
+
+    
 )
 {
     if !visited.insert(name.clone()){
@@ -60,16 +65,54 @@ fn parse_cargo_toml_and_append(
     let toml_path = path.join("Cargo.toml");
     let toml = Manifest::from_path(toml_path).unwrap();
 
+    let mut tmp_dev_dependencies = BTreeMap::<String,BTreeSet<String>>::new();
+    let dev_dependencies = 
+    if let Some(dd) = top_dev_dependencies
+    {
+        dd
+    }else{
+        let dev_dependencies_toml = toml.dev_dependencies;
+        dev_dependencies_toml.into_iter().for_each(|(depname,dependency)|{
+            if !tmp_dev_dependencies.contains_key(depname.as_str()){
+                tmp_dev_dependencies.insert(depname.clone(), BTreeSet::<String>::new());
+            }
+            let dep_features = tmp_dev_dependencies.get_mut(depname.as_str()).unwrap();
+            let mut use_default = true;
+
+            if let Some(detail) = dependency.detail(){
+                if !detail.default_features{
+                    use_default = false;
+                }
+            }
+            dependency.req_features().iter().for_each(|req_feature|{
+                dep_features.insert(req_feature.clone());
+            });
+            
+            if use_default{
+                dep_features.insert("default".to_string());
+            }
+        });
+        &tmp_dev_dependencies
+    };
+
     let mut dependencies = BTreeMap::<String,bool>::new();
     let mut weakname = BTreeSet::<String>::new();
     let deps = toml.dependencies;
     deps.into_iter().for_each(|(depname,dependency)|{
         if let Some(p) = find_arceos_crate(&depname){
-            parse_cargo_toml_and_append(depname.clone(),p.as_path(),graph,visited);
+            parse_cargo_toml_and_append(depname.clone(),p.as_path(),graph,visited, resolver, Some(dev_dependencies));
 
             weakname.insert(depname.clone());
             let mut use_default = true;
             if !dependency.optional(){
+                if resolver == cargo_toml::Resolver::V1{
+                    if let Some(dev_features) = dev_dependencies.get(depname.as_str()){
+                        dev_features.iter().for_each(|req_feature|{
+                            graph.make_link(Node::Component(name.clone()), Node::Feature(depname.clone(), req_feature.clone()));
+                        });
+                    }
+                }
+
                 graph.make_link(Node::Component(name.clone()), Node::Component(depname.clone()));
                 if let Some(detail) = dependency.detail(){
                     if !detail.default_features{
@@ -171,16 +214,41 @@ pub fn parse_deps_from_toml(
     let mut taken= BTreeSet::<Node>::new();
     let mut visited = BTreeSet::<String>::new();
     let mut graph = Graph::new();
-    parse_cargo_toml_and_append(name.clone(), app_path, &mut graph, &mut visited);
+
+    
+    let workspace_path = get_workspace();
+    let workspace_toml_path = workspace_path.join("Cargo.toml");
+    let workspace_toml = Manifest::from_path(workspace_toml_path).unwrap();
+    let resolver = 
+    if let Some(workspace) = workspace_toml.workspace{
+        if let Some(resolver) = workspace.resolver{
+            resolver
+        }else if let Some(root_package) = workspace_toml.package{
+            if let Some(resolver) = root_package.resolver{
+                resolver
+            }else{
+                match root_package.edition(){
+                    cargo_toml::Edition::E2015| cargo_toml::Edition::E2018 => cargo_toml::Resolver::V1,
+                    _ => cargo_toml::Resolver::V2
+                }
+            }
+        }else{
+            cargo_toml::Resolver::V1
+        }
+    }else{
+        cargo_toml::Resolver::V1
+    };
+    parse_cargo_toml_and_append(name.clone(), app_path, &mut graph, &mut visited, resolver, None);
 
     // graph.content.iter().for_each(|(node,nodes)|{
     //     print!("{node}: [");
     //     nodes.iter().for_each(|v|{print!("{v}, ")});
     //     println!("]");
     // });
-
-    
-    queue.push_back(Node::Component(name.clone()));
+    let root_com = Node::Component(name.clone());
+    if taken.insert(root_com.clone()){
+        queue.push_back(root_com.clone());
+    }
     req_features.into_iter().for_each(|feature|{
         let feat = Node::Feature(name.clone(), feature.clone());
         if taken.insert(feat.clone()){

@@ -1,5 +1,7 @@
 use std::{fs, path::{PathBuf, Path}, sync::RwLock};
 lazy_static!{
+    static ref ARCEOS_ROOT:RwLock<PathBuf> = RwLock::new(PathBuf::from("../../"));
+    
     static ref CRATE_ROOT:RwLock<PathBuf> = RwLock::new(PathBuf::from("../../crates/"));
     static ref MODULE_ROOT:RwLock<PathBuf> = RwLock::new(PathBuf::from("../../modules/"));
 
@@ -30,7 +32,12 @@ pub fn find_arceos_crate(name: &String)->Option<Box<PathBuf>>{
 }
 
 pub fn change_root(path: &String){
+    *ARCEOS_ROOT.write().unwrap() = Path::new(path).to_path_buf();
     *CRATE_ROOT.write().unwrap() = Path::new(path).join("crates");
     *MODULE_ROOT.write().unwrap() = Path::new(path).join("modules");
     *ULIB_ROOT.write().unwrap() = Path::new(path).join("ulib");
+}
+
+pub fn get_workspace()->PathBuf{
+    ARCEOS_ROOT.read().as_ref().unwrap().as_path().to_path_buf()
 }
